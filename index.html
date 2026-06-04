@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>점핑 스티브 홀로그램</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #0ff;
+            box-shadow: 0 0 10px #0ff;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            color: #0ff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        p {
+            margin: 0 0 15px 0;
+            font-size: 0.9rem;
+            color: #ccc;
+        }
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        button {
+            background-color: transparent;
+            color: #0ff;
+            border: 2px solid #0ff;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            width: 100%;
+        }
+        button:hover {
+            background-color: #0ff;
+            color: #000;
+        }
+        button.sound-btn {
+            color: #e0bb00;
+            border-color: #e0bb00;
+        }
+        button.sound-btn:hover {
+            background-color: #e0bb00;
+            color: #000;
+        }
+        button.reset-btn {
+            color: #ff3300;
+            border-color: #ff3300;
+        }
+        button.reset-btn:hover {
+            background-color: #ff3300;
+            color: #000;
+        }
+        #center-guide {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            opacity: 0.5;
+            z-index: 5;
+        }
+        #center-guide::before, #center-guide::after {
+            content: '';
+            position: absolute;
+            background-color: #0ff;
+        }
+        #center-guide::before {
+            top: 9px; left: -10px; right: -10px; height: 2px;
+        }
+        #center-guide::after {
+            left: 9px; top: -10px; bottom: -10px; width: 2px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>점핑 스티브 홀로그램</h1>
+        <p id="instruction">화면 중앙 십자선 위에<br>홀로그램 피라미드를 올려주세요.</p>
+        <div class="btn-group">
+            <button id="toggle-mode">일반 3D 모드로 보기</button>
+            <button id="toggle-sound" class="sound-btn">소리 켜기 (🔊 Off)</button>
+            <button id="reset-village" class="reset-btn">마을 재건하기</button>
+        </div>
+    </div>
+
+    <div id="center-guide"></div>
+
+    <script>
+        let scene, renderer;
+        let steveGroup, armL, armR, legL, legR;
+        let flintSteelGroup, maceGroup; // 무기 그룹
+        let mainCamera, camFront, camBack, camLeft, camRight;
+        let orbitControls;
+        let clock = new THREE.Clock();
+        
+        let isHologramMode = true;
+
+        // 오디오 관련 변수
+        let audioCtx = null;
+        let isSoundEnabled = false;
+
+        // 게임 요소 저장 배열
+        let tnts = [];
+        let explosionParticles = [];
+        let sparks = []; 
+        let tntMaterials; 
+        let tntWhiteMaterials; 
+        let destructibleBlocks = []; 
+        let villagers = []; 
+
+        // 카메라 및 물리 변수
+        let shakeIntensity = 0;
+        let lastJumpId = -1;
+        let lastTime = 0;
+
+        // 상수 설정
+        const JUMP_SPEED = 6.8; 
+        const JUMP_HEIGHT = 8.5;
+        const SWING_AMOUNT = 1.6;
+
+        // 스티브 상태 관리 (전투 로직)
+        let steveCombatState = 'NORMAL'; // NORMAL, KNOCKED, SMASH
+        let steveYVelocity = 0;
+        let steveBaseY = -3;
+        let steveJumpTimer = 0; 
+        let ironGolem = null; // 철 골렘 객체
+
+        // 색상 팔레트
+        const COLORS = {
+            skin: 0xf1c27d, hair: 0x3d2111, shirt: 0x00aaaa, pants: 0x333399,
+            neon: 0x00ffff, steel: 0xdcdcdc, flint: 0x3c3c3c, 
+            villagerRobe: 0x7a4b3a, villagerEye: 0x336600,  
+            golemIron: 0xdddddd, golemVine: 0x446633, // 철 골렘 색상
+            maceHandle: 0x8b5a2b, maceHead: 0x222222, // 철퇴(메이스) 색상
+            woodWall: 0xc49a6c, woodRoof: 0x855a30, cobble: 0x808080, glass: 0xe0ffff,       
+            leaf: 0x2e8b57, log: 0x5c4033, gold: 0xffd700, brick: 0xaa5544, obsidian: 0x191426     
+        };
+
+        window.onload = function() {
+            init();
+            animate();
+            
+            document.getElementById('toggle-mode').addEventListener('click', function() {
+                isHologramMode = !isHologramMode;
+                this.innerText = isHologramMode ? "일반 3D 모드로 보기" : "홀로그램 4면 모드로 보기";
+                document.getElementById('center-guide').style.display = isHologramMode ? "block" : "none";
+                document.getElementById('instruction').style.display = isHologramMode ? "block" : "none";
+                
+                if(!isHologramMode) {
+                    mainCamera.position.set(0, 25, 60);
+                    orbitControls.target.set(0, -4, 0);
+                    orbitControls.update();
+                }
+            });
+
+            document.getElementById('toggle-sound').addEventListener('click', function() {
+                initAudio();
+                isSoundEnabled = !isSoundEnabled;
+                if (isSoundEnabled) {
+                    this.innerText = "소리 끄기 (🔊 On)";
+                    this.style.backgroundColor = "rgba(224, 187, 0, 0.2)";
+                    playPingSound();
+                } else {
+                    this.innerText = "소리 켜기 (🔊 Off)";
+                    this.style.backgroundColor = "transparent";
+                }
+            });
+
+            document.getElementById('reset-village').addEventListener('click', function() {
+                rebuildVillage();
+            });
+        };
+
+        // --- Web Audio API 사운드 합성기 ---
+        function initAudio() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function playPingSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine'; osc.frequency.setValueAtTime(600, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.15);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.16);
+        }
+
+        // 철퇴 스매시 사운드 (육중하고 파괴적인 충격파 + 금속 타격음 결합)
+        function playSmashSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+            
+            // 1. 묵직한 베이스 붐 (쿵!)
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(150, now);
+            osc.frequency.linearRampToValueAtTime(10, now + 0.8);
+            gain.gain.setValueAtTime(1.5, now); // 매우 큰 소리
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.8);
+
+            // 2. 메이스의 거대한 쇳소리 (금속성 챙!)
+            const metalOsc = audioCtx.createOscillator();
+            const metalGain = audioCtx.createGain();
+            metalOsc.type = 'square';
+            metalOsc.frequency.setValueAtTime(800, now);
+            metalOsc.frequency.exponentialRampToValueAtTime(200, now + 0.6);
+            metalGain.gain.setValueAtTime(0.7, now);
+            metalGain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+            
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 1200;
+            filter.Q.value = 5.0;
+            
+            metalOsc.connect(filter); filter.connect(metalGain); metalGain.connect(audioCtx.destination);
+            metalOsc.start(); metalOsc.stop(now + 0.6);
+        }
+
+        // 철 골렘 피격 사운드 (묵직한 쇳소리 삐걱)
+        function playGolemHurtSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(150, now);
+            osc.frequency.exponentialRampToValueAtTime(80, now + 0.3);
+            gain.gain.setValueAtTime(0.6, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 800;
+            filter.Q.value = 5.0;
+            osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.35);
+        }
+
+        // 철 골렘 사망 사운드 (길게 무너지는 금속음과 파편 소리)
+        function playGolemDeathSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+            
+            // 1. 금속이 찢어지는 굉음
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(180, now);
+            osc.frequency.exponentialRampToValueAtTime(30, now + 0.9);
+            gain.gain.setValueAtTime(0.8, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.9);
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(1200, now);
+            filter.frequency.exponentialRampToValueAtTime(100, now + 0.9);
+            osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.95);
+
+            // 2. 무너지는 쇳조각 파편 노이즈
+            const bufferSize = audioCtx.sampleRate * 0.6;
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+            const noise = audioCtx.createBufferSource(); noise.buffer = buffer;
+            const noiseFilter = audioCtx.createBiquadFilter(); noiseFilter.type = 'highpass'; noiseFilter.frequency.value = 600;
+            const noiseGain = audioCtx.createGain(); 
+            noiseGain.gain.setValueAtTime(0.0, now);
+            noiseGain.gain.linearRampToValueAtTime(0.5, now + 0.2); 
+            noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+            noise.connect(noiseFilter); noiseFilter.connect(noiseGain); noiseGain.connect(audioCtx.destination);
+            noise.start();
+        }
+
+        function playSparkSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const bufferSize = audioCtx.sampleRate * 0.12; 
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+            const noiseNode = audioCtx.createBufferSource(); noiseNode.buffer = buffer;
+            const filter = audioCtx.createBiquadFilter(); filter.type = 'highpass'; filter.frequency.value = 7500;
+            const gain = audioCtx.createGain(); gain.gain.setValueAtTime(0.08, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            noiseNode.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            noiseNode.start(); noiseNode.stop(audioCtx.currentTime + 0.12);
+        }
+
+        function startFuseSound() {
+            if (!audioCtx || !isSoundEnabled) return null;
+            const duration = 1.8;
+            const bufferSize = audioCtx.sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+            const noiseNode = audioCtx.createBufferSource(); noiseNode.buffer = buffer;
+            const bandpass = audioCtx.createBiquadFilter(); bandpass.type = 'bandpass'; bandpass.frequency.setValueAtTime(3200, audioCtx.currentTime); bandpass.Q.setValueAtTime(3.0, audioCtx.currentTime);
+            const gain = audioCtx.createGain(); gain.gain.setValueAtTime(0.06, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.04, audioCtx.currentTime + duration);
+            noiseNode.connect(bandpass); bandpass.connect(gain); gain.connect(audioCtx.destination);
+            noiseNode.start(); return { node: noiseNode, gain: gain };
+        }
+
+        function playExplosionSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+
+            const mainDuration = 0.85; 
+            const mainBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate * mainDuration, audioCtx.sampleRate);
+            const mainData = mainBuffer.getChannelData(0);
+            for (let i = 0; i < mainBuffer.length; i++) mainData[i] = Math.max(-0.95, Math.min(0.95, (Math.random() * 2 - 1) * 3.5));
+            const mainNoise = audioCtx.createBufferSource(); mainNoise.buffer = mainBuffer;
+            const mainFilter = audioCtx.createBiquadFilter(); mainFilter.type = 'lowpass'; mainFilter.frequency.setValueAtTime(1200, now); mainFilter.frequency.exponentialRampToValueAtTime(80, now + mainDuration);
+            const mainGain = audioCtx.createGain(); mainGain.gain.setValueAtTime(0.3, now); mainGain.gain.exponentialRampToValueAtTime(0.001, now + mainDuration);
+            mainNoise.connect(mainFilter); mainFilter.connect(mainGain); mainGain.connect(audioCtx.destination);
+            mainNoise.start(); mainNoise.stop(now + mainDuration);
+
+            const subOsc = audioCtx.createOscillator(); const subGain = audioCtx.createGain();
+            subOsc.type = 'triangle'; subOsc.frequency.setValueAtTime(140, now); subOsc.frequency.exponentialRampToValueAtTime(8, now + 0.55); 
+            subGain.gain.setValueAtTime(0.5, now); subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+            subOsc.connect(subGain); subGain.connect(audioCtx.destination);
+            subOsc.start(); subOsc.stop(now + 0.55);
+        }
+
+        function playVillagerHurtSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+            osc.type = 'sawtooth'; osc.frequency.setValueAtTime(320, now); osc.frequency.exponentialRampToValueAtTime(250, now + 0.15); osc.frequency.exponentialRampToValueAtTime(180, now + 0.3);
+            gain.gain.setValueAtTime(0.0, now); gain.gain.linearRampToValueAtTime(0.8, now + 0.05); gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+            const filter = audioCtx.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = 900; filter.Q.value = 2.0;
+            osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.35);
+        }
+
+        // 골렘의 강력한 타격 사운드 (금속 타격음)
+        function playGolemPunchSound() {
+            if (!audioCtx || !isSoundEnabled) return;
+            const now = audioCtx.currentTime;
+            
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(200, now);
+            osc.frequency.exponentialRampToValueAtTime(50, now + 0.2);
+            gain.gain.setValueAtTime(0.8, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+            
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(1500, now);
+            filter.frequency.exponentialRampToValueAtTime(300, now + 0.2);
+            
+            osc.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(now + 0.25);
+        }
+
+        function createTNTSideTexture() {
+            const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64; const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#cc2222'; ctx.fillRect(0, 0, 64, 64);
+            ctx.fillStyle = '#991111'; for(let i=0; i<40; i++) ctx.fillRect(Math.floor(Math.random()*16)*4, Math.floor(Math.random()*16)*4, 4, 4);
+            ctx.fillStyle = '#f5f5f5'; ctx.fillRect(0, 20, 64, 24);
+            ctx.fillStyle = '#dddddd'; for(let i=0; i<15; i++) ctx.fillRect(Math.floor(Math.random()*16)*4, 20 + Math.floor(Math.random()*6)*4, 4, 4);
+            ctx.fillStyle = '#000000'; ctx.font = '900 18px "Courier New", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('TNT', 32, 32);
+            const texture = new THREE.CanvasTexture(canvas); texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter; return texture;
+        }
+
+        function createTNTTopTexture() {
+            const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 64; const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#b71c1c'; ctx.fillRect(0, 0, 64, 64);
+            ctx.fillStyle = '#212121'; for(let x=0; x<64; x+=16) for(let y=0; y<64; y+=16) ctx.fillRect(x+4, y+4, 8, 8);
+            ctx.fillStyle = '#f5f5f5'; ctx.fillRect(16, 28, 32, 4); ctx.fillRect(28, 16, 4, 32); ctx.fillRect(28, 28, 8, 8); ctx.fillStyle = '#111111'; ctx.fillRect(30, 30, 4, 4);
+            const texture = new THREE.CanvasTexture(canvas); texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter; return texture;
+        }
+
+        function createTNTMaterials() {
+            const sideMat = new THREE.MeshLambertMaterial({ map: createTNTSideTexture(), transparent: true, opacity: 0.95 });
+            const topMat = new THREE.MeshLambertMaterial({ map: createTNTTopTexture(), transparent: true, opacity: 0.95 });
+            return [sideMat, sideMat, topMat, topMat, sideMat, sideMat];
+        }
+
+        function createTNTWhiteMaterials() {
+            const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+            return [whiteMat, whiteMat, whiteMat, whiteMat, whiteMat, whiteMat];
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setScissorTest(true); 
+            document.body.appendChild(renderer.domElement);
+
+            mainCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+            orbitControls = new THREE.OrbitControls(mainCamera, renderer.domElement);
+            orbitControls.enableDamping = true;
+
+            const camDistance = 55; const fov = 43;
+            camFront = new THREE.PerspectiveCamera(fov, 1, 0.1, 1000); camFront.position.set(0, 0, camDistance); camFront.up.set(0, -1, 0); camFront.lookAt(0, 0, 0);
+            camBack = new THREE.PerspectiveCamera(fov, 1, 0.1, 1000); camBack.position.set(0, 0, -camDistance); camBack.up.set(0, 1, 0); camBack.lookAt(0, 0, 0);
+            camLeft = new THREE.PerspectiveCamera(fov, 1, 0.1, 1000); camLeft.position.set(-camDistance, 0, 0); camLeft.up.set(0, 0, 1); camLeft.lookAt(0, 0, 0);
+            camRight = new THREE.PerspectiveCamera(fov, 1, 0.1, 1000); camRight.position.set(camDistance, 0, 0); camRight.up.set(0, 0, 1); camRight.lookAt(0, 0, 0);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8); scene.add(ambientLight);
+            const pointLight1 = new THREE.PointLight(0xffffff, 0.9); pointLight1.position.set(20, 40, 20); scene.add(pointLight1);
+            const pointLight2 = new THREE.PointLight(0x00ffff, 0.6); pointLight2.position.set(-25, -15, -25); scene.add(pointLight2);
+
+            tntMaterials = createTNTMaterials();
+            tntWhiteMaterials = createTNTWhiteMaterials();
+
+            createSteve();
+
+            villageGroup = new THREE.Group();
+            scene.add(villageGroup);
+            rebuildVillage();
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function createHoloMesh(geometry, colorHex, neonColorHex) {
+            const finalNeonColor = neonColorHex !== undefined ? neonColorHex : COLORS.neon;
+            const material = new THREE.MeshLambertMaterial({ color: colorHex, transparent: true, opacity: 0.85 });
+            const mesh = new THREE.Mesh(geometry, material);
+            const edges = new THREE.EdgesGeometry(geometry);
+            const lineMat = new THREE.LineBasicMaterial({ color: finalNeonColor, linewidth: 2 });
+            mesh.add(new THREE.LineSegments(edges, lineMat));
+            mesh.originalColor = colorHex; // 데미지 복원용
+            return mesh;
+        }
+
+        function createSteve() {
+            steveGroup = new THREE.Group();
+
+            const headGeo = new THREE.BoxGeometry(8, 8, 8); headGeo.translate(0, 4, 0); 
+            const head = createHoloMesh(headGeo, COLORS.skin); head.position.y = 6;
+            const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); const eyeBlueMat = new THREE.MeshBasicMaterial({ color: 0x2e41c4 });
+            const eyeLWhite = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.8, 0.2), eyeWhiteMat); eyeLWhite.position.set(-2.2, 2.4, 4.05); head.add(eyeLWhite);
+            const eyeLBlue = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.22), eyeBlueMat); eyeLBlue.position.set(-1.8, 2.4, 4.05); head.add(eyeLBlue);
+            const eyeRWhite = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.8, 0.2), eyeWhiteMat); eyeRWhite.position.set(2.2, 2.4, 4.05); head.add(eyeRWhite);
+            const eyeRBlue = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.22), eyeBlueMat); eyeRBlue.position.set(1.8, 2.4, 4.05); head.add(eyeRBlue);
+
+            const hairTop = createHoloMesh(new THREE.BoxGeometry(8.3, 2, 8.3), COLORS.hair); hairTop.position.set(0, 7.5, 0); head.add(hairTop);
+            const hairBack = createHoloMesh(new THREE.BoxGeometry(8.3, 5, 1.5), COLORS.hair); hairBack.position.set(0, 4.5, -3.6); head.add(hairBack);
+            const hairLeft = createHoloMesh(new THREE.BoxGeometry(1.5, 5, 5.5), COLORS.hair); hairLeft.position.set(-3.6, 4.5, -0.5); head.add(hairLeft);
+            const hairRight = createHoloMesh(new THREE.BoxGeometry(1.5, 5, 5.5), COLORS.hair); hairRight.position.set(3.6, 4.5, -0.5); head.add(hairRight);
+            const hairFront = createHoloMesh(new THREE.BoxGeometry(8.3, 1.5, 1.5), COLORS.hair); hairFront.position.set(0, 7, 3.6); head.add(hairFront);
+
+            steveGroup.add(head);
+
+            const body = createHoloMesh(new THREE.BoxGeometry(8, 12, 4), COLORS.shirt); body.position.y = 0; steveGroup.add(body);
+
+            const armGeo = new THREE.BoxGeometry(4, 12, 4); armGeo.translate(0, -5, 0); 
+            armL = createHoloMesh(armGeo, COLORS.skin); armL.position.set(-6, 6, 0); steveGroup.add(armL);
+            armR = createHoloMesh(armGeo, COLORS.skin); armR.position.set(6, 6, 0);
+
+            // 1. 부싯돌과 부시 그룹
+            flintSteelGroup = new THREE.Group();
+            const ironMat = new THREE.MeshLambertMaterial({ color: COLORS.steel });
+            const steelPart1 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2.5, 0.8), ironMat); steelPart1.position.set(-0.4, -11, 1.2); flintSteelGroup.add(steelPart1);
+            const steelPart2 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.8, 0.8), ironMat); steelPart2.position.set(0.3, -12, 1.2); flintSteelGroup.add(steelPart2);
+            const flintMat = new THREE.MeshLambertMaterial({ color: COLORS.flint });
+            const flintPart = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), flintMat); flintPart.position.set(0.2, -10.3, 1.2); flintSteelGroup.add(flintPart);
+            armR.add(flintSteelGroup); 
+
+            // 2. 신규 무기 '철퇴(Mace)' 그룹 (원래 크기와 비율로 복구)
+            maceGroup = new THREE.Group();
+            const maceHandle = createHoloMesh(new THREE.BoxGeometry(0.8, 12, 0.8), COLORS.maceHandle);
+            maceHandle.position.set(0, -11, 1.2);
+            const maceHead = createHoloMesh(new THREE.BoxGeometry(4.5, 4.5, 4.5), COLORS.maceHead);
+            maceHead.position.set(0, -17, 1.2);
+            maceGroup.add(maceHandle); maceGroup.add(maceHead);
+            maceGroup.visible = false; // 기본은 숨김
+            armR.add(maceGroup);
+
+            steveGroup.add(armR);
+
+            const legGeo = new THREE.BoxGeometry(4, 12, 4); legGeo.translate(0, -6, 0);
+            legL = createHoloMesh(legGeo, COLORS.pants); legL.position.set(-2, -6, 0); steveGroup.add(legL);
+            legR = createHoloMesh(legGeo, COLORS.pants); legR.position.set(2, -6, 0); steveGroup.add(legR);
+
+            steveGroup.scale.set(0.5, 0.5, 0.5); 
+            scene.add(steveGroup);
+        }
+
+        // --- 철 골렘(Iron Golem) 생성 함수 ---
+        function createIronGolem(x, z) {
+            const gGroup = new THREE.Group();
+            
+            const headGeo = new THREE.BoxGeometry(8, 10, 8);
+            headGeo.translate(0, 5, 0);
+            const head = createHoloMesh(headGeo, COLORS.golemIron);
+            head.position.set(0, 24, -2);
+            const nose = createHoloMesh(new THREE.BoxGeometry(2, 5, 2), COLORS.golemIron);
+            nose.position.set(0, 2, 5);
+            head.add(nose);
+            gGroup.add(head);
+
+            const bodyGeo = new THREE.BoxGeometry(18, 16, 10);
+            const body = createHoloMesh(bodyGeo, COLORS.golemIron);
+            body.position.set(0, 16, 0);
+            const vine1 = createHoloMesh(new THREE.BoxGeometry(18.2, 2, 10.2), COLORS.golemVine);
+            vine1.position.set(0, 2, 0); body.add(vine1);
+            gGroup.add(body);
+
+            const armGeo = new THREE.BoxGeometry(5, 26, 5);
+            armGeo.translate(0, -13, 0);
+            const armL = createHoloMesh(armGeo, COLORS.golemIron);
+            armL.position.set(-11.5, 24, 0);
+            const armR = createHoloMesh(armGeo, COLORS.golemIron);
+            armR.position.set(11.5, 24, 0);
+            gGroup.add(armL);
+            gGroup.add(armR);
+
+            const legGeo = new THREE.BoxGeometry(6, 10, 6);
+            legGeo.translate(0, -5, 0);
+            const legL = createHoloMesh(legGeo, COLORS.golemIron);
+            legL.position.set(-4, 10, 0);
+            const legR = createHoloMesh(legGeo, COLORS.golemIron);
+            legR.position.set(4, 10, 0);
+            gGroup.add(legL);
+            gGroup.add(legR);
+
+            gGroup.scale.set(0.35, 0.35, 0.35);
+            gGroup.position.set(x, -8.5, z);
+            villageGroup.add(gGroup);
+
+            ironGolem = {
+                mesh: gGroup,
+                armL: armL, armR: armR, legL: legL, legR: legR,
+                isAngry: false,
+                isDead: false,
+                speed: 16, 
+                angle: 0,
+                moveTimer: 0
+            };
+        }
+
+        // --- 주민(Villager) 생성 함수 ---
+        function createVillager(x, z) {
+            const vGroup = new THREE.Group();
+            const baseY = -8.5; 
+            
+            const headGeo = new THREE.BoxGeometry(8, 10, 8);
+            const head = createHoloMesh(headGeo, COLORS.skin);
+            head.position.set(0, 29, 0);
+            
+            const noseGeo = new THREE.BoxGeometry(2, 4, 2);
+            const nose = createHoloMesh(noseGeo, COLORS.skin);
+            nose.position.set(0, -1, 4.5); 
+            head.add(nose);
+
+            const eyeWhiteGeo = new THREE.BoxGeometry(1.5, 2, 0.2);
+            const eyeColorGeo = new THREE.BoxGeometry(0.7, 1.5, 0.25);
+            const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const eyeColorMat = new THREE.MeshBasicMaterial({ color: COLORS.villagerEye });
+
+            const eyeLWhite = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat); eyeLWhite.position.set(-2.0, 1.5, 4.05);
+            const eyeLColor = new THREE.Mesh(eyeColorGeo, eyeColorMat); eyeLColor.position.set(-1.5, 1.5, 4.05);
+            head.add(eyeLWhite); head.add(eyeLColor);
+
+            const eyeRWhite = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat); eyeRWhite.position.set(2.0, 1.5, 4.05);
+            const eyeRColor = new THREE.Mesh(eyeColorGeo, eyeColorMat); eyeRColor.position.set(1.5, 1.5, 4.05);
+            head.add(eyeRWhite); head.add(eyeRColor);
+            vGroup.add(head);
+
+            const bodyGeo = new THREE.BoxGeometry(8, 12, 6);
+            const body = createHoloMesh(bodyGeo, COLORS.villagerRobe);
+            body.position.set(0, 18, 0);
+            vGroup.add(body);
+
+            const armsGeo = new THREE.BoxGeometry(10, 6, 4);
+            const arms = createHoloMesh(armsGeo, COLORS.villagerRobe);
+            arms.position.set(0, 18, 3.5);
+            vGroup.add(arms);
+
+            const legGeo = new THREE.BoxGeometry(4, 12, 4);
+            const legL = createHoloMesh(legGeo, COLORS.villagerRobe); legL.position.set(-2, 6, 0);
+            const legR = createHoloMesh(legGeo, COLORS.villagerRobe); legR.position.set(2, 6, 0);
+            vGroup.add(legL); vGroup.add(legR);
+
+            vGroup.scale.set(0.18, 0.18, 0.18);
+            vGroup.position.set(x, baseY, z);
+            
+            villageGroup.add(vGroup);
+            
+            villagers.push({ 
+                mesh: vGroup, destroyed: false, isDying: false, deathTimer: 0, 
+                angle: Math.random() * Math.PI * 2, speed: 0, moveTimer: Math.random() * 2 
+            });
+        }
+
+        function createPoofSmoke(pos) {
+            const count = 15;
+            for(let i = 0; i < count; i++) {
+                const size = 0.5 + Math.random() * 0.6;
+                const geo = new THREE.BoxGeometry(size, size, size);
+                const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+                const p = new THREE.Mesh(geo, mat);
+                p.position.copy(pos);
+                
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                const speed = 4 + Math.random() * 7;
+                p.velocity = new THREE.Vector3(Math.sin(phi) * Math.cos(theta) * speed, Math.sin(phi) * Math.sin(theta) * speed, Math.cos(phi) * speed);
+                p.decay = 2.5 + Math.random() * 2.0;
+                scene.add(p);
+                explosionParticles.push(p);
+            }
+        }
+
+        function addVillageBlock(x, y, z, w, h, d, color) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mesh = createHoloMesh(geo, color, color); 
+            mesh.position.set(x, y, z);
+            villageGroup.add(mesh);
+            destructibleBlocks.push({ mesh: mesh, color: color, width: w, height: h, depth: d, destroyed: false });
+        }
+
+        function createHouse(cx, cz, colorWall, colorRoof, sizeScale = 1) {
+            const wallH = 4.5 * sizeScale; const baseY = -8.5; const size = 6 * sizeScale;
+            addVillageBlock(cx, baseY, cz, size, 1.5, size, COLORS.cobble);
+            addVillageBlock(cx - size/2.4, baseY + wallH/2 + 0.75, cz, size/6, wallH, size, colorWall); 
+            addVillageBlock(cx + size/2.4, baseY + wallH/2 + 0.75, cz, size/6, wallH, size, colorWall); 
+            addVillageBlock(cx, baseY + wallH/2 + 0.75, cz - size/2.4, size - size/3, wallH, size/6, colorWall); 
+            addVillageBlock(cx, baseY + wallH/2 + 0.75, cz + size/2.4, size - size/3, wallH, size/6, colorWall); 
+            addVillageBlock(cx, baseY + wallH + 1.2, cz, size + 1, 1.2, size + 1, colorRoof);
+            addVillageBlock(cx, baseY + wallH + 2.2, cz, size - 2, 1.0, size - 2, colorRoof);
+            addVillageBlock(cx, baseY + wallH/2 + 0.75, cz + size/2.3, size/4, size/4, 0.2, COLORS.glass);
+        }
+
+        function createWatchtower(cx, cz, isPremium = false) {
+            const baseY = -8.5; const mainColor = isPremium ? COLORS.obsidian : COLORS.brick;
+            addVillageBlock(cx, baseY + 1.5, cz, 5.5, 3, 5.5, COLORS.cobble);
+            addVillageBlock(cx, baseY + 4.5, cz, 4.5, 3, 4.5, mainColor); addVillageBlock(cx, baseY + 7.5, cz, 4.5, 3, 4.5, mainColor);
+            addVillageBlock(cx - 2.0, baseY + 9.5, cz, 0.8, 1.5, 4.8, COLORS.cobble); addVillageBlock(cx + 2.0, baseY + 9.5, cz, 0.8, 1.5, 4.8, COLORS.cobble);
+            addVillageBlock(cx, baseY + 9.5, cz - 2.0, 4.8, 1.5, 0.8, COLORS.cobble); addVillageBlock(cx, baseY + 9.5, cz + 2.0, 4.8, 1.5, 0.8, COLORS.cobble);
+            addVillageBlock(cx, baseY + 9.2, cz, 1.8, 1.8, 1.8, isPremium ? COLORS.neon : COLORS.gold);
+        }
+
+        function createTownWell(cx, cz) {
+            const baseY = -8.5;
+            addVillageBlock(cx, baseY + 0.5, cz, 5, 1, 5, COLORS.cobble);
+            addVillageBlock(cx - 2, baseY + 2.5, cz - 2, 0.8, 3, 0.8, COLORS.log); addVillageBlock(cx + 2, baseY + 2.5, cz - 2, 0.8, 3, 0.8, COLORS.log);
+            addVillageBlock(cx - 2, baseY + 2.5, cz + 2, 0.8, 3, 0.8, COLORS.log); addVillageBlock(cx + 2, baseY + 2.5, cz + 2, 0.8, 3, 0.8, COLORS.log);
+            addVillageBlock(cx, baseY + 4.2, cz, 5.5, 0.8, 5.5, COLORS.woodRoof);
+        }
+
+        function createAncientShrine(cx, cz) {
+            addVillageBlock(cx, -7.5, cz, 9, 2, 9, COLORS.cobble); addVillageBlock(cx, -5.5, cz, 6, 2, 6, COLORS.brick); addVillageBlock(cx, -3.5, cz, 3, 2, 3, COLORS.gold);
+        }
+
+        function createTree(cx, cz, heightFactor = 1) {
+            const logH = 4 * heightFactor;
+            addVillageBlock(cx, -8.5 + logH/2, cz, 1.2, logH, 1.2, COLORS.log);
+            addVillageBlock(cx, -8.5 + logH + 1.0, cz, 4.5, 2.5, 4.5, COLORS.leaf); addVillageBlock(cx, -8.5 + logH + 2.2, cz, 3.0, 1.5, 3.0, COLORS.leaf);
+        }
+
+        function rebuildVillage() {
+            // 모든 블록 및 엔티티 제거
+            destructibleBlocks.forEach(b => {
+                villageGroup.remove(b.mesh); b.mesh.traverse(child => { if(child.isMesh) { child.geometry.dispose(); child.material.dispose(); } });
+            });
+            destructibleBlocks = [];
+
+            villagers.forEach(v => {
+                villageGroup.remove(v.mesh); v.mesh.traverse(child => { if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); } });
+            });
+            villagers = [];
+
+            if (ironGolem && ironGolem.mesh) {
+                villageGroup.remove(ironGolem.mesh);
+                ironGolem.mesh.traverse(child => { if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); } });
+                ironGolem = null;
+            }
+
+            // 전투 상태 초기화
+            steveCombatState = 'NORMAL';
+            steveJumpTimer = 0;
+            lastJumpId = -1;
+            flintSteelGroup.visible = true;
+            maceGroup.visible = false;
+
+            // 마을 건물 배치
+            createHouse(-18, -18, COLORS.woodWall, COLORS.woodRoof, 1.5); createTownWell(-11, -12); createTree(-26, -24, 1.5); createTree(-28, -12, 1.2);
+            createWatchtower(0, -24, true); createTree(-8, -25, 1.1); createTree(8, -25, 1.3);
+            createHouse(18, -18, COLORS.cobble, COLORS.woodRoof, 1.6); createTree(27, -25, 1.3); createTree(12, -15, 1.0);
+            createAncientShrine(24, 0); createTree(25, -8, 1.3); createTree(25, 8, 1.4);
+            createHouse(19, 18, COLORS.brick, COLORS.log, 1.4); createHouse(12, 25, COLORS.woodWall, COLORS.woodRoof, 1.1); createTree(26, 12, 1.3); createTree(26, 26, 1.1);
+            createWatchtower(0, 22, false); createTree(-8, 24, 1.2); createTree(8, 24, 1.1);
+            createHouse(-19, 16, COLORS.cobble, COLORS.log, 1.4); createHouse(-12, 25, COLORS.brick, COLORS.woodRoof, 1.2); createTree(-26, 8, 1.5); createTree(-26, 22, 1.3); createTree(-14, 26, 1.2);
+            createHouse(-24, -2, COLORS.woodWall, COLORS.log, 1.5); createTree(-25, -8, 1.3); createTree(-25, 5, 1.2);
+
+            // 철 골렘 스폰
+            createIronGolem(15, -5);
+
+            // 주민 35명 스폰
+            for (let i = 0; i < 35; i++) {
+                let vx, vz;
+                do {
+                    vx = (Math.random() - 0.5) * 56; 
+                    vz = (Math.random() - 0.5) * 56; 
+                } while (Math.abs(vx) < 6 && Math.abs(vz) < 6);
+                createVillager(vx, vz);
+            }
+        }
+
+        function onWindowResize() {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            mainCamera.aspect = window.innerWidth / window.innerHeight;
+            mainCamera.updateProjectionMatrix();
+        }
+
+        function createSparkEffect(pos) {
+            playSparkSound();
+            for (let i = 0; i < 14; i++) {
+                const spark = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), new THREE.MeshBasicMaterial({ color: [0xffaa00, 0xff3300, 0xffffff][Math.floor(Math.random()*3)] }));
+                spark.position.copy(pos);
+                spark.velocity = new THREE.Vector3((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18 + 10, (Math.random() - 0.5) * 18);
+                spark.decay = 3.8 + Math.random() * 4.2; spark.opacity = 1.0;
+                scene.add(spark); sparks.push(spark);
+            }
+        }
+
+        function spawnSmokeTrail(pos) {
+            const p = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.6 }));
+            p.position.copy(pos); p.velocity = new THREE.Vector3((Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2); p.decay = 2.0;
+            scene.add(p); explosionParticles.push(p);
+        }
+
+        function spawnTNT() {
+            const tntGeo = new THREE.BoxGeometry(4, 4, 4);
+            const stevePos = new THREE.Vector3();
+            steveGroup.getWorldPosition(stevePos);
+
+            const handPos = new THREE.Vector3(6 * 0.65, -5 * 0.65, 1.2 * 0.65); 
+            handPos.applyMatrix4(armR.matrixWorld); 
+            createSparkEffect(handPos);
+
+            const tnt = new THREE.Mesh(tntGeo, tntMaterials);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+            tnt.add(new THREE.LineSegments(new THREE.EdgesGeometry(tntGeo), lineMat));
+
+            tnt.position.copy(stevePos);
+            tnt.position.y += 3.2; 
+
+            // 조준: 골렘이 살아있고 화가 났으면 골렘에게 정확히 조준
+            let forward = new THREE.Vector3(0, 0, 1);
+            if (ironGolem && ironGolem.isAngry && !ironGolem.isDead) {
+                forward = ironGolem.mesh.position.clone().sub(stevePos);
+                forward.y = 0;
+                forward.normalize();
+                steveGroup.rotation.y = Math.atan2(forward.x, forward.z);
+            } else {
+                forward.applyAxisAngle(new THREE.Vector3(0, 1, 0), steveGroup.rotation.y);
+            }
+            
+            tnt.velocity = new THREE.Vector3(forward.x * 28, 26, forward.z * 28);
+            tnt.age = 0;
+
+            const activeFuse = startFuseSound();
+            if (activeFuse) {
+                tnt.fuseAudioNode = activeFuse.node;
+                tnt.fuseGainNode = activeFuse.gain;
+            }
+
+            scene.add(tnt);
+            tnts.push(tnt);
+        }
+
+        function shatterBlock(block) {
+            const pos = new THREE.Vector3(); block.mesh.getWorldPosition(pos);
+            const w = block.width; const h = block.height; const d = block.depth;
+            const rows = w > 2 ? 2 : 1; const cols = h > 2 ? 2 : 1; const layers = d > 2 ? 2 : 1;
+            for (let x = 0; x < rows; x++) {
+                for (let y = 0; y < cols; y++) {
+                    for (let z = 0; z < layers; z++) {
+                        const piece = new THREE.Mesh(new THREE.BoxGeometry(w/rows*0.85, h/cols*0.85, d/layers*0.85), new THREE.MeshBasicMaterial({ color: block.color, transparent: true, opacity: 1.0 }));
+                        const ox = (x - (rows - 1)/2) * (w / rows); const oy = (y - (cols - 1)/2) * (h / cols); const oz = (z - (layers - 1)/2) * (d / layers);
+                        piece.position.copy(pos).add(new THREE.Vector3(ox, oy, oz));
+                        const dir = piece.position.clone().sub(pos).normalize();
+                        if (dir.lengthSq() === 0) dir.set((Math.random()-0.5)*2, Math.random()*2, (Math.random()-0.5)*2).normalize();
+                        piece.velocity = new THREE.Vector3(dir.x * 20 + (Math.random() - 0.5) * 10, dir.y * 16 + Math.random() * 18 + 8, dir.z * 20 + (Math.random() - 0.5) * 10);
+                        piece.decay = 1.1 + Math.random() * 1.5;
+                        scene.add(piece); explosionParticles.push(piece);
+                    }
+                }
+            }
+        }
+
+        // 메이스의 엄청난 바닥 찍기 타격(스매시) 효과
+        function createSmashExplosion(pos) {
+            playSmashSound();
+            shakeIntensity = 5.0; 
+            
+            const ringGeo = new THREE.RingGeometry(1, 6.5, 32);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.copy(pos); ring.position.y = -8.4; ring.rotation.x = Math.PI / 2; 
+            ring.isRing = true; ring.decay = 2.5; 
+            scene.add(ring); explosionParticles.push(ring);
+
+            for(let i=0; i<40; i++) {
+                const size = 1.0 + Math.random() * 1.5; 
+                const partGeo = new THREE.BoxGeometry(size, size, size);
+                const partMat = new THREE.MeshBasicMaterial({ color: [0xeeeeee, 0xaaaaaa, 0x444444][Math.floor(Math.random()*3)], transparent: true, opacity: 1.0 });
+                const particle = new THREE.Mesh(partGeo, partMat);
+                particle.position.copy(pos);
+                particle.position.y = -8.4;
+                const theta = Math.random() * Math.PI * 2;
+                const speed = 25 + Math.random() * 30; 
+                particle.velocity = new THREE.Vector3(Math.sin(theta) * speed, Math.random() * 15, Math.cos(theta) * speed);
+                particle.decay = 1.0 + Math.random() * 1.5; 
+                scene.add(particle); explosionParticles.push(particle);
+            }
+        }
+
+        // 철 골렘을 파괴하는 헬퍼 함수
+        function killGolem(golem) {
+            golem.isDead = true;
+            playGolemDeathSound(); // 사망 효과음 재생
+            createSmashExplosion(golem.mesh.position);
+            
+            // 골렘 파편화
+            const pos = golem.mesh.position.clone();
+            for(let i=0; i<30; i++) {
+                const piece = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), new THREE.MeshBasicMaterial({ color: COLORS.golemIron, transparent: true }));
+                piece.position.copy(pos).add(new THREE.Vector3((Math.random()-0.5)*4, (Math.random())*8, (Math.random()-0.5)*4));
+                piece.velocity = new THREE.Vector3((Math.random() - 0.5) * 30, Math.random() * 20 + 10, (Math.random() - 0.5) * 30);
+                piece.decay = 1.5;
+                scene.add(piece); explosionParticles.push(piece);
+            }
+            
+            villageGroup.remove(golem.mesh);
+            golem.mesh.traverse(child => { if(child.isMesh) { child.geometry.dispose(); child.material.dispose(); }});
+        }
+
+        function createExplosion(pos) {
+            playExplosionSound();
+            shakeIntensity = 3.5;
+
+            const flashGeo = new THREE.SphereGeometry(5.5, 12, 12);
+            const flashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.98 });
+            const flash = new THREE.Mesh(flashGeo, flashMat);
+            flash.position.copy(pos); flash.scale.set(0.1, 0.1, 0.1); flash.isFlash = true; flash.decay = 5.2; 
+            scene.add(flash); explosionParticles.push(flash);
+
+            const ringGeo = new THREE.RingGeometry(1, 2.5, 24);
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.copy(pos); ring.position.y = -8.4; ring.rotation.x = Math.PI / 2; ring.isRing = true; ring.decay = 1.8; 
+            scene.add(ring); explosionParticles.push(ring);
+
+            const colors = [0xff1100, 0xff5500, 0xff9900, 0xffe855, 0x111111, 0x333333, 0x555555, 0x888888, 0xaaaaaa]; 
+            for(let i=0; i<45; i++) {
+                const partGeo = new THREE.BoxGeometry(1.0, 1.0, 1.0);
+                const partMat = new THREE.MeshBasicMaterial({ color: colors[Math.floor(Math.random() * colors.length)], transparent: true, opacity: 1.0 });
+                const particle = new THREE.Mesh(partGeo, partMat);
+                particle.position.copy(pos);
+                const theta = Math.random() * Math.PI * 2; const phi = Math.acos((Math.random() * 2) - 1); const speed = 15 + Math.random() * 20; 
+                particle.velocity = new THREE.Vector3(Math.sin(phi) * Math.cos(theta) * speed, Math.sin(phi) * Math.sin(theta) * speed + 10, Math.cos(phi) * speed);
+                particle.decay = 0.8 + Math.random() * 1.3; 
+                scene.add(particle); explosionParticles.push(particle);
+            }
+
+            const explosionRadius = 18.0; 
+            
+            // 골렘 어그로 및 피격 판정! 
+            if (ironGolem && !ironGolem.isDead) {
+                const gPos = new THREE.Vector3(); ironGolem.mesh.getWorldPosition(gPos);
+                if (pos.distanceTo(gPos) <= explosionRadius * 1.5) {
+                    ironGolem.isAngry = true;
+                    
+                    // TNT에 맞을 때마다 쇳소리 재생
+                    playGolemHurtSound();
+
+                    // 피격 시 몸이 빨갛게 깜빡임
+                    ironGolem.mesh.traverse(child => { if(child.isMesh && child.originalColor) child.material.color.setHex(0xffaaaa); });
+                    setTimeout(() => {
+                        if (ironGolem && !ironGolem.isDead) ironGolem.mesh.traverse(child => { if(child.isMesh && child.originalColor) child.material.color.setHex(child.originalColor); });
+                    }, 300);
+                }
+            }
+
+            destructibleBlocks.forEach(block => {
+                if (!block.destroyed) {
+                    const blockWorldPos = new THREE.Vector3(); block.mesh.getWorldPosition(blockWorldPos);
+                    if (pos.distanceTo(blockWorldPos) <= explosionRadius) {
+                        block.destroyed = true; shatterBlock(block);
+                        villageGroup.remove(block.mesh); block.mesh.geometry.dispose(); block.mesh.children[0].geometry.dispose(); block.mesh.children[0].material.dispose();
+                    }
+                }
+            });
+
+            villagers.forEach(v => {
+                if (!v.destroyed && !v.isDying) {
+                    const vPos = new THREE.Vector3(); v.mesh.getWorldPosition(vPos); vPos.y += 1.0;
+                    if (pos.distanceTo(vPos) <= explosionRadius) {
+                        v.isDying = true; v.deathTimer = 0.3; 
+                        playVillagerHurtSound();
+                        const damageMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+                        const damageLineMat = new THREE.LineBasicMaterial({ color: 0xff8888, linewidth: 2 });
+                        v.mesh.traverse((child) => { if (child.isMesh) { if (child.type === 'LineSegments') child.material = damageLineMat; else child.material = damageMat; } });
+                    }
+                }
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+            const delta = time - lastTime;
+            lastTime = time;
+
+            // --- 스티브 전투 모드 제어 ---
+            if (steveCombatState === 'NORMAL') {
+                steveJumpTimer += delta;
+                const jumpCycle = Math.abs(Math.sin(steveJumpTimer * JUMP_SPEED));
+                const swingCycle = Math.cos(steveJumpTimer * JUMP_SPEED);
+
+                steveGroup.position.y = jumpCycle * JUMP_HEIGHT + steveBaseY; 
+
+                const currentJumpId = Math.floor((steveJumpTimer * JUMP_SPEED) / Math.PI);
+                if (currentJumpId > lastJumpId && lastJumpId !== -1) {
+                    spawnTNT();
+                }
+                lastJumpId = currentJumpId;
+
+                armL.rotation.x = swingCycle * SWING_AMOUNT;
+                armR.rotation.x = -swingCycle * (SWING_AMOUNT * 1.35) + 0.35; 
+                legL.rotation.x = -swingCycle * SWING_AMOUNT;
+                legR.rotation.x = swingCycle * SWING_AMOUNT;
+
+                if (ironGolem && ironGolem.isAngry && !ironGolem.isDead) {
+                    let dir = ironGolem.mesh.position.clone().sub(steveGroup.position);
+                    let targetAngle = Math.atan2(dir.x, dir.z);
+                    let angleDiff = targetAngle - steveGroup.rotation.y;
+                    while(angleDiff <= -Math.PI) angleDiff += Math.PI * 2;
+                    while(angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                    steveGroup.rotation.y += angleDiff * 5 * delta;
+                } else {
+                    steveGroup.rotation.y += 0.013; 
+                }
+            } 
+            else if (steveCombatState === 'KNOCKED') {
+                steveGroup.position.y += steveYVelocity * delta;
+                steveYVelocity -= 90 * delta; 
+                
+                // 공중에 뜨자마자 철퇴를 들고 내리찍을 준비 동작 (잘 보이도록 팔을 뻗음)
+                armL.rotation.x = Math.PI * 0.8;
+                armR.rotation.x = Math.PI * 0.8;
+
+                if (steveYVelocity <= 0) {
+                    steveCombatState = 'SMASH';
+                    steveYVelocity = -90; 
+                }
+            } 
+            else if (steveCombatState === 'SMASH') {
+                steveGroup.position.y += steveYVelocity * delta;
+                
+                // 줄어든 점프 높이에 맞춰 철퇴를 위에서 아래로 시원하게 휘두르는 모션
+                const smashProgress = Math.max(0, (steveGroup.position.y - steveBaseY) / 10);
+                armR.rotation.x = Math.PI * smashProgress - Math.PI * 0.2; 
+
+                if (steveGroup.position.y <= steveBaseY) {
+                    steveGroup.position.y = steveBaseY;
+                    steveCombatState = 'NORMAL';
+                    flintSteelGroup.visible = true;
+                    maceGroup.visible = false;
+                    steveJumpTimer = 0; 
+                    lastJumpId = -1;
+
+                    if (ironGolem && !ironGolem.isDead) {
+                        killGolem(ironGolem);
+                    } else {
+                        createSmashExplosion(steveGroup.position);
+                    }
+                }
+            }
+
+            // --- 철 골렘 AI 업데이트 ---
+            if (ironGolem && !ironGolem.isDead) {
+                if (ironGolem.isAngry) {
+                    let dir = steveGroup.position.clone().sub(ironGolem.mesh.position);
+                    dir.y = 0;
+                    let dist = dir.length();
+
+                    if (dist > 6.0) {
+                        dir.normalize();
+                        ironGolem.mesh.position.addScaledVector(dir, 22 * delta);
+                        ironGolem.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+                        
+                        let walkCycle = Math.sin(time * 20);
+                        ironGolem.armL.rotation.x = walkCycle * 1.0;
+                        ironGolem.armR.rotation.x = -walkCycle * 1.0;
+                        ironGolem.legL.rotation.x = -walkCycle * 1.0;
+                        ironGolem.legR.rotation.x = walkCycle * 1.0;
+                    } else {
+                        ironGolem.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+                        if (steveCombatState === 'NORMAL') {
+                            steveCombatState = 'KNOCKED';
+                            steveYVelocity = 40; // 너무 높지 않게 튕기는 높이 조절
+                            playGolemPunchSound();
+
+                            // 골렘에게 맞고 공중에 뜰 때 즉시 철퇴로 무기 변경 (화면에 보이게 함)
+                            flintSteelGroup.visible = false;
+                            maceGroup.visible = true; 
+
+                            ironGolem.armL.rotation.x = -Math.PI / 2;
+                            ironGolem.armR.rotation.x = -Math.PI / 2;
+                        } else {
+                            ironGolem.armL.rotation.x = -Math.PI / 4;
+                            ironGolem.armR.rotation.x = -Math.PI / 4;
+                            ironGolem.legL.rotation.x = 0;
+                            ironGolem.legR.rotation.x = 0;
+                        }
+                    }
+                } else {
+                    ironGolem.moveTimer -= delta;
+                    if (ironGolem.moveTimer <= 0) {
+                        ironGolem.angle = Math.random() * Math.PI * 2; 
+                        ironGolem.speed = Math.random() > 0.3 ? 4.0 : 0; 
+                        ironGolem.moveTimer = 2.0 + Math.random() * 3.0;
+                    }
+                    ironGolem.mesh.rotation.y = ironGolem.angle;
+                    ironGolem.mesh.position.x += Math.sin(ironGolem.angle) * ironGolem.speed * delta;
+                    ironGolem.mesh.position.z += Math.cos(ironGolem.angle) * ironGolem.speed * delta;
+                    
+                    if (ironGolem.speed > 0) {
+                        let walkCycle = Math.sin(time * 6);
+                        ironGolem.armL.rotation.x = walkCycle * 0.3;
+                        ironGolem.armR.rotation.x = -walkCycle * 0.3;
+                        ironGolem.legL.rotation.x = -walkCycle * 0.3;
+                        ironGolem.legR.rotation.x = walkCycle * 0.3;
+                    } else {
+                        ironGolem.armL.rotation.x = 0; ironGolem.armR.rotation.x = 0;
+                        ironGolem.legL.rotation.x = 0; ironGolem.legR.rotation.x = 0;
+                    }
+                }
+                
+                if (ironGolem.mesh.position.x > 32) ironGolem.mesh.position.x = 32;
+                if (ironGolem.mesh.position.x < -32) ironGolem.mesh.position.x = -32;
+                if (ironGolem.mesh.position.z > 32) ironGolem.mesh.position.z = 32;
+                if (ironGolem.mesh.position.z < -32) ironGolem.mesh.position.z = -32;
+            }
+
+            // --- 일반 물리 및 파티클 업데이트 ---
+            for (let i = sparks.length - 1; i >= 0; i--) {
+                let spark = sparks[i]; spark.position.addScaledVector(spark.velocity, delta); spark.velocity.y -= 25 * delta; spark.material.opacity -= spark.decay * delta;
+                if (spark.material.opacity <= 0) { scene.remove(spark); spark.geometry.dispose(); spark.material.dispose(); sparks.splice(i, 1); }
+            }
+
+            for (let i = tnts.length - 1; i >= 0; i--) {
+                let tnt = tnts[i]; tnt.position.x += tnt.velocity.x * delta; tnt.position.y += tnt.velocity.y * delta; tnt.position.z += tnt.velocity.z * delta;
+                tnt.velocity.y -= 52 * delta; tnt.rotation.x += 4 * delta; tnt.rotation.y += 3 * delta; tnt.age += delta;
+
+                if (Math.random() < 0.6) spawnSmokeTrail(tnt.position);
+
+                const isFlashWhite = Math.floor(tnt.age * (tnt.age > 1.2 ? 16 : 8)) % 2 === 0;
+                tnt.material = isFlashWhite ? tntWhiteMaterials : tntMaterials; 
+                
+                if (tnt.position.y <= -8.0 || tnt.age > 1.8) {
+                    if (tnt.fuseAudioNode) { try { tnt.fuseAudioNode.stop(); } catch (e) {} }
+                    createExplosion(tnt.position); scene.remove(tnt); tnt.geometry.dispose(); tnts.splice(i, 1);
+                }
+            }
+
+            for (let i = explosionParticles.length - 1; i >= 0; i--) {
+                let p = explosionParticles[i];
+                if (p.isFlash) { p.scale.addScalar(40 * delta); p.material.opacity -= p.decay * delta; } 
+                else if (p.isRing) { p.scale.addScalar(15 * delta); p.material.opacity -= p.decay * delta; } 
+                else { p.position.addScaledVector(p.velocity, delta); p.velocity.y -= 18 * delta; p.velocity.multiplyScalar(0.93); p.material.opacity -= p.decay * delta; }
+                if (p.material.opacity <= 0) { scene.remove(p); p.geometry.dispose(); p.material.dispose(); explosionParticles.splice(i, 1); }
+            }
+
+            for (let i = villagers.length - 1; i >= 0; i--) {
+                let v = villagers[i];
+                if (v.isDying) {
+                    v.deathTimer -= delta;
+                    if (v.deathTimer <= 0) {
+                        v.destroyed = true; const vPos = new THREE.Vector3(); v.mesh.getWorldPosition(vPos); vPos.y += 1.0;
+                        createPoofSmoke(vPos); villageGroup.remove(v.mesh); v.mesh.traverse(child => { if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); } }); villagers.splice(i, 1);
+                    }
+                } else if (!v.destroyed) {
+                    v.moveTimer -= delta;
+                    if (v.moveTimer <= 0) { v.angle = Math.random() * Math.PI * 2; v.speed = Math.random() > 0.4 ? (4.0 + Math.random() * 4.0) : 0; v.moveTimer = 1.0 + Math.random() * 2.0; }
+                    v.mesh.rotation.y = v.angle; v.mesh.position.x += Math.sin(v.angle) * v.speed * delta; v.mesh.position.z += Math.cos(v.angle) * v.speed * delta;
+                    if (v.mesh.position.x > 32) v.mesh.position.x = 32; if (v.mesh.position.x < -32) v.mesh.position.x = -32; if (v.mesh.position.z > 32) v.mesh.position.z = 32; if (v.mesh.position.z < -32) v.mesh.position.z = -32;
+                    v.mesh.position.y = v.speed > 0 ? -8.5 + Math.abs(Math.sin(time * 12)) * 0.8 : -8.5;
+                }
+            }
+
+            if (shakeIntensity > 0.01) {
+                scene.position.set((Math.random() - 0.5) * shakeIntensity, (Math.random() - 0.5) * shakeIntensity, (Math.random() - 0.5) * shakeIntensity);
+                shakeIntensity *= 0.82; 
+            } else scene.position.set(0, 0, 0);
+
+            orbitControls.update();
+            renderViews();
+        }
+
+        function renderViews() {
+            const width = window.innerWidth; const height = window.innerHeight;
+            if (!isHologramMode) { renderer.setScissorTest(false); renderer.setViewport(0, 0, width, height); renderer.render(scene, mainCamera); return; }
+            renderer.setScissorTest(true); renderer.setScissor(0, 0, width, height); renderer.setClearColor(0x000000); renderer.clear();
+            const size = Math.min(width, height) / 3.2; const gap = 10; const cx = width / 2; const cy = height / 2;
+            renderer.setViewport(cx - size/2, cy - size - gap, size, size); renderer.setScissor(cx - size/2, cy - size - gap, size, size); renderer.render(scene, camFront);
+            renderer.setViewport(cx - size/2, cy + gap, size, size); renderer.setScissor(cx - size/2, cy + gap, size, size); renderer.render(scene, camBack);
+            renderer.setViewport(cx - size - gap, cy - size/2, size, size); renderer.setScissor(cx - size - gap, cy - size/2, size, size); renderer.render(scene, camLeft);
+            renderer.setViewport(cx + gap, cy - size/2, size, size); renderer.setScissor(cx + gap, cy - size/2, size, size); renderer.render(scene, camRight);
+        }
+    </script>
+</body>
+</html>
